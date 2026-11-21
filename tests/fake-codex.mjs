@@ -105,29 +105,41 @@ function handleRequest(msg) {
     case "review/start": {
       const turnId = `turn_${seq++}`;
       const reviewThreadId = params.delivery === "detached" ? `thr_rev_${seq++}` : params.threadId;
-      sendResult(id, { turn: { id: turnId }, reviewThreadId });
-
-      setTimeout(() => {
-        send({ method: "turn/started", params: { threadId: reviewThreadId, turn: { id: turnId } } });
-        send({
-          method: "item/started",
-          params: { threadId: reviewThreadId, item: { id: "rev1", type: "enteredReviewMode", review: "standard" } }
-        });
-        send({
-          method: "item/completed",
-          params: {
-            threadId: reviewThreadId,
-            item: {
-              id: "rev1",
-              type: "exitedReviewMode",
-              review: `Standard review ok for target=${params.target?.type ?? "unknown"}`
+      const emitReview = () => {
+        const lines = [
+          { method: "turn/started", params: { threadId: reviewThreadId, turn: { id: turnId } } },
+          {
+            method: "item/started",
+            params: { threadId: reviewThreadId, item: { id: "rev1", type: "enteredReviewMode", review: "standard" } }
+          },
+          {
+            method: "item/completed",
+            params: {
+              threadId: reviewThreadId,
+              item: {
+                id: "rev1",
+                type: "exitedReviewMode",
+                review: `Standard review ok for target=${params.target?.type ?? "unknown"}`
+              }
             }
+          },
+          {
+            method: "turn/completed",
+            params: { threadId: reviewThreadId, turn: { id: turnId, status: "completed" } }
           }
-        });
-        send({
-          method: "turn/completed",
-          params: { threadId: reviewThreadId, turn: { id: turnId, status: "completed" } }
-        });
+        ];
+        return lines.map((m) => JSON.stringify(m)).join("\n") + "\n";
+      };
+
+      if (process.env.FAKE_CODEX_SYNC_REVIEW_BURST === "1") {
+        // Emit response and all detached reviewThreadId notifications in ONE single write chunk.
+        process.stdout.write(`${JSON.stringify({ id, result: { turn: { id: turnId }, reviewThreadId } })}\n${emitReview()}`);
+        return;
+      }
+
+      sendResult(id, { turn: { id: turnId }, reviewThreadId });
+      setTimeout(() => {
+        process.stdout.write(emitReview());
       }, 25);
       return;
     }
@@ -136,6 +148,10 @@ function handleRequest(msg) {
       const threadId = params.threadId;
       const turnId = `turn_${seq++}`;
       const prompt = params.input?.[0]?.text ?? "";
+      if (prompt.includes("[FAIL_TURN_START]")) {
+        sendError(id, -32000, "Simulated turn/start failure");
+        return;
+      }
       sendResult(id, { turn: { id: turnId } });
 
       send({ method: "turn/started", params: { threadId, turn: { id: turnId } } });

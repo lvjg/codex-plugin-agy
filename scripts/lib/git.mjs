@@ -165,17 +165,32 @@ export function collectReviewContext(cwd, target) {
     const status = gitChecked(repoRoot, ["status", "--short"]).stdout.trim();
     parts.push("", "Working tree status:", status || "(clean)");
 
-    const stagedDiff = git(repoRoot, ["diff", "--cached"], { maxBuffer: MAX_INLINE_DIFF_BYTES + 4096 }).stdout ?? "";
-    const unstagedDiff = git(repoRoot, ["diff"], { maxBuffer: MAX_INLINE_DIFF_BYTES + 4096 }).stdout ?? "";
-    const combinedDiff = [stagedDiff, unstagedDiff].filter(Boolean).join("\n");
+    const stagedRes = git(repoRoot, ["diff", "--cached"], { maxBuffer: MAX_INLINE_DIFF_BYTES + 4096 });
+    const unstagedRes = git(repoRoot, ["diff"], { maxBuffer: MAX_INLINE_DIFF_BYTES + 4096 });
+    const stagedOk = !stagedRes.error && stagedRes.status === 0;
+    const unstagedOk = !unstagedRes.error && unstagedRes.status === 0;
+    const combinedDiff = stagedOk && unstagedOk ? [stagedRes.stdout ?? "", unstagedRes.stdout ?? ""].filter(Boolean).join("\n") : "";
 
-    if (Buffer.byteLength(combinedDiff, "utf8") <= MAX_INLINE_DIFF_BYTES) {
+    if (stagedOk && unstagedOk && Buffer.byteLength(combinedDiff, "utf8") <= MAX_INLINE_DIFF_BYTES) {
       if (combinedDiff.trim()) {
         parts.push("", "Diff:", combinedDiff.trim());
       }
     } else {
-      const stat = gitChecked(repoRoot, ["diff", "--stat", "HEAD"]).stdout.trim();
-      parts.push("", "Diff exceeds inline limit; stat summary:", stat, "Inspect exact files directly in the repository.");
+      const hasHead = git(repoRoot, ["rev-parse", "--verify", "HEAD"]).status === 0;
+      const stat = hasHead
+        ? (git(repoRoot, ["diff", "--stat", "HEAD"]).stdout ?? "").trim()
+        : [
+            (git(repoRoot, ["diff", "--cached", "--stat"]).stdout ?? "").trim(),
+            (git(repoRoot, ["diff", "--stat"]).stdout ?? "").trim()
+          ]
+            .filter(Boolean)
+            .join("\n");
+      parts.push(
+        "",
+        "Diff exceeds inline limit; stat summary:",
+        stat || "(summary unavailable)",
+        "Inspect exact files directly in the repository."
+      );
     }
 
     if (state.untracked.length > 0) {

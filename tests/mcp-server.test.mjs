@@ -99,6 +99,15 @@ test("stdio MCP server handles initialize, tools/list, tools/call, and clean EOF
     assert.equal(statusRes.result.structuredContent.jobId, runRes.result.structuredContent.jobId);
     assert.ok(statusRes.result.structuredContent.logTail.length > 0);
 
+    // Failed codex_run should report MCP isError: true while retaining structured payload
+    const failedRun = await rpc("tools/call", {
+      name: "codex_run",
+      arguments: { cwd: repo, prompt: "[CRASH] fail mcp run", conversationId: "conv-mcp" }
+    });
+    assert.equal(failedRun.result.isError, true);
+    assert.equal(failedRun.result.structuredContent.status, "failed");
+    assert.ok(failedRun.result.structuredContent.jobId);
+
     // Close stdin and verify clean exit
     const exitPromise = new Promise((resolve) => child.on("exit", (code) => resolve(code)));
     child.stdin.end();

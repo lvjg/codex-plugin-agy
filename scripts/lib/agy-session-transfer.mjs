@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 
 import { runCommand } from "./process.mjs";
 
 const MAX_SUMMARY_BYTES = 12 * 1024;
 const MAX_LINE_EXCERPT = 500;
+const TRUNCATION_NOTICE = "\n\n[Handoff truncated to 12KB budget]";
 
 function getAllowedBrainRoots(extraRoots = []) {
   const home = os.homedir();
@@ -65,17 +67,40 @@ function truncateText(text, maxChars = MAX_LINE_EXCERPT) {
   return `${clean.slice(0, maxChars - 3)}...`;
 }
 
-export function extractAntigravityHandoff(cwd, transcriptPath, options = {}) {
+function truncateUtf8Bytes(text, maxBytes) {
+  const str = String(text ?? "");
+  if (Buffer.byteLength(str, "utf8") <= maxBytes) {
+    return str;
+  }
+  const budget = Math.max(0, maxBytes - Buffer.byteLength(TRUNCATION_NOTICE, "utf8"));
+  let lo = 0;
+  let hi = str.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (Buffer.byteLength(str.slice(0, mid), "utf8") <= budget) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return `${str.slice(0, lo)}${TRUNCATION_NOTICE}`;
+}
+
+export async function extractAntigravityHandoff(cwd, transcriptPath, options = {}) {
   const validPath = validateTranscriptPath(transcriptPath, options);
-  const raw = fs.readFileSync(validPath, "utf8");
-  const lines = raw.split(/\r?\n/).filter(Boolean);
 
   const userInputs = [];
   const plannerResponses = [];
   const errors = [];
   const touchedFiles = new Set();
 
-  for (const line of lines) {
+  const stream = fs.createReadStream(validPath, { encoding: "utf8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  for await (const line of rl) {
+    if (!line.trim()) {
+      continue;
+    }
     let step;
     try {
       step = JSON.parse(line);
@@ -158,10 +183,7 @@ export function extractAntigravityHandoff(cwd, transcriptPath, options = {}) {
     }
   }
 
-  let summary = sections.join("\n");
-  if (Buffer.byteLength(summary, "utf8") > MAX_SUMMARY_BYTES) {
-    summary = `${summary.slice(0, MAX_SUMMARY_BYTES - 80)}\n\n[Handoff truncated to 12KB budget]`;
-  }
+  const summary = truncateUtf8Bytes(sections.join("\n"), MAX_SUMMARY_BYTES);
 
   const prompt = [
     "You are receiving a structured handoff from an active Antigravity session.",

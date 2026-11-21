@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import path from "node:path";
 import process from "node:process";
 
 import { CodexJobManager } from "./lib/job-manager.mjs";
@@ -295,7 +296,9 @@ export function createMcpDispatcher(manager) {
           const toolArgs = params?.arguments ?? {};
           try {
             const result = await dispatchTool(toolName, toolArgs);
-            sendResult(id, formatToolResult(result, false));
+            const isFailedExecution =
+              (toolName === "codex_run" || toolName === "codex_review") && result?.status === "failed";
+            sendResult(id, formatToolResult(result, isFailedExecution));
           } catch (toolErr) {
             sendResult(
               id,
@@ -321,7 +324,7 @@ export function createMcpDispatcher(manager) {
 function startStdioServer() {
   const manager = new CodexJobManager({
     allowedTranscriptRoots: process.env.CODEX_BRIDGE_ALLOWED_TRANSCRIPT_ROOTS
-      ? process.env.CODEX_BRIDGE_ALLOWED_TRANSCRIPT_ROOTS.split(":").filter(Boolean)
+      ? process.env.CODEX_BRIDGE_ALLOWED_TRANSCRIPT_ROOTS.split(path.delimiter).filter(Boolean)
       : []
   });
   const handleMessage = createMcpDispatcher(manager);

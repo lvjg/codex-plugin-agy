@@ -82,6 +82,7 @@ export class MuxAppServerClient {
     const child = spawn(this.codexBin, ["app-server"], {
       cwd: this.workspaceRoot,
       env: this.env,
+      detached: process.platform !== "win32",
       shell: false,
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -129,7 +130,7 @@ export class MuxAppServerClient {
     this.child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
-  request(method, params = {}) {
+  request(method, params = {}, options = {}) {
     if (this.closed) {
       return Promise.reject(new Error("codex app-server client is closed."));
     }
@@ -138,7 +139,12 @@ export class MuxAppServerClient {
     this.nextId += 1;
 
     return new Promise((resolve, reject) => {
-      this.pendingRequests.set(id, { resolve, reject, method });
+      this.pendingRequests.set(id, {
+        resolve,
+        reject,
+        method,
+        onResultSync: typeof options.onResultSync === "function" ? options.onResultSync : null
+      });
       try {
         this.#sendMessage({ id, method, params });
       } catch (err) {
@@ -258,7 +264,14 @@ export class MuxAppServerClient {
           createProtocolError(message.error.message ?? `codex app-server ${pending.method} failed.`, message.error)
         );
       } else {
-        pending.resolve(message.result ?? {});
+        const result = message.result ?? {};
+        try {
+          pending.onResultSync?.(result);
+        } catch (syncErr) {
+          pending.reject(syncErr);
+          return;
+        }
+        pending.resolve(result);
       }
       return;
     }
@@ -340,22 +353,37 @@ export class MuxAppServerClient {
     }
     this.closed = true;
 
+    const closeError = new Error("codex app-server client closed.");
     for (const pending of this.pendingRequests.values()) {
-      pending.reject(new Error("codex app-server client closed."));
+      pending.reject(closeError);
     }
     this.pendingRequests.clear();
+
+    for (const entry of [...this.activeCaptures]) {
+      failTurn(entry.capture, closeError);
+    }
     this.activeCaptures.clear();
     this.threadToCapture.clear();
     this.pendingServerRequests.clear();
 
     if (this.child) {
+      const child = this.child;
+      const pid = child.pid;
+      this.child = null;
       try {
-        this.child.stdin?.end();
+        child.stdin?.end();
       } catch {
         // Ignore stdin close failure.
       }
-      terminateProcessTree(this.child.pid);
-      this.child = null;
+      terminateProcessTree(pid, { signal: "SIGTERM" });
+      if (process.platform !== "win32" && pid) {
+        const killTimer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            terminateProcessTree(pid, { signal: "SIGKILL" });
+          }
+        }, 2_000);
+        killTimer.unref?.();
+      }
     }
   }
 }

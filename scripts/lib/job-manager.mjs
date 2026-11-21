@@ -113,12 +113,25 @@ export class CodexJobManager {
     }
   }
 
+  #evictLiveJob(live) {
+    if (!live) {
+      return;
+    }
+    this.liveJobs.delete(live.jobId);
+    for (const [tid, jid] of this.threadToJobId.entries()) {
+      if (jid === live.jobId) {
+        this.threadToJobId.delete(tid);
+      }
+    }
+  }
+
   #handleIncomingServerRequest(req) {
     const live = req.jobId ? this.liveJobs.get(req.jobId) : null;
     if (!live) {
       return;
     }
     live.status = "awaiting_input";
+    live.updatedAt = new Date().toISOString();
     live.pendingRequest = {
       requestId: req.requestId,
       method: req.method,
@@ -149,6 +162,7 @@ export class CodexJobManager {
       branchName: live.branchName ?? null,
       logPath: live.logPath,
       startedAt: live.startedAt,
+      updatedAt: live.updatedAt ?? live.startedAt,
       completedAt: live.completedAt ?? null,
       filesChanged: live.filesChanged ?? [],
       finalMessage: live.finalMessage ?? null,
@@ -218,6 +232,10 @@ export class CodexJobManager {
   async setup(args = {}) {
     const cwd = args.cwd || process.cwd();
     const workspaceRoot = resolveWorkspaceRoot(cwd);
+
+    if (args.enableReviewGate === true && args.disableReviewGate === true) {
+      throw new Error("Cannot pass both `enableReviewGate: true` and `disableReviewGate: true`.");
+    }
 
     const configPatch = {};
     if (args.enableReviewGate === true) {
@@ -290,17 +308,18 @@ export class CodexJobManager {
   async #startOrResumeThread(client, targetCwd, options = {}) {
     const sandbox = options.sandbox ?? "workspace-write";
     const approvalPolicy = options.approvalPolicy ?? "never";
+    const stateWorkspaceRoot = options.stateWorkspaceRoot ?? targetCwd;
     let threadId = options.threadId ?? null;
 
     if (!threadId && options.resumeLast) {
-      const jobs = listJobs(targetCwd).filter(
+      const jobs = listJobs(stateWorkspaceRoot).filter(
         (j) => j.kind === "task" && j.threadId && (!options.conversationId || j.conversationId === options.conversationId)
       );
       if (jobs[0]?.threadId) {
         threadId = jobs[0].threadId;
       } else {
         const listed = await client.request("thread/list", {
-          cwd: targetCwd,
+          cwd: stateWorkspaceRoot,
           limit: 10,
           sortKey: "updated_at",
           sourceKinds: ["appServer"],
@@ -364,6 +383,8 @@ export class CodexJobManager {
     const approvalPolicy = args.approvalPolicy === "on-request" ? "on-request" : "never";
     const ephemeral = typeof args.ephemeral === "boolean" ? args.ephemeral : false;
 
+    const client = await this.#ensureClient(workspaceRoot);
+
     let effectiveCwd = rawCwd;
     let worktreePath = null;
     let branchName = null;
@@ -375,18 +396,31 @@ export class CodexJobManager {
       branchName = wt.branchName;
     }
 
-    const client = await this.#ensureClient(workspaceRoot);
-    const threadId = await this.#startOrResumeThread(client, effectiveCwd, {
-      threadId: args.threadId,
-      resumeLast: Boolean(args.resumeLast),
-      conversationId: args.conversationId,
-      model: args.model,
-      sandbox,
-      approvalPolicy,
-      ephemeral,
-      threadName: buildThreadName(prompt)
-    });
+    let threadId;
+    try {
+      threadId = await this.#startOrResumeThread(client, effectiveCwd, {
+        stateWorkspaceRoot: workspaceRoot,
+        threadId: args.threadId,
+        resumeLast: Boolean(args.resumeLast),
+        conversationId: args.conversationId,
+        model: args.model,
+        sandbox,
+        approvalPolicy,
+        ephemeral,
+        threadName: buildThreadName(prompt)
+      });
+    } catch (err) {
+      if (worktreePath) {
+        try {
+          removeIsolatedWorktree(workspaceRoot, worktreePath, branchName);
+        } catch {
+          // Best-effort rollback of freshly created worktree.
+        }
+      }
+      throw err;
+    }
 
+    const now = new Date().toISOString();
     const live = {
       jobId,
       kind: "task",
@@ -401,7 +435,8 @@ export class CodexJobManager {
       branchName,
       logPath,
       client,
-      startedAt: new Date().toISOString(),
+      startedAt: now,
+      updatedAt: now,
       completedAt: null,
       filesChanged: [],
       finalMessage: null,
@@ -416,6 +451,7 @@ export class CodexJobManager {
       approvalPolicy,
       inferredCompletionDelayMs: this.inferredCompletionDelayMs,
       onProgress: ({ message, phase }) => {
+        live.updatedAt = new Date().toISOString();
         appendJobLog(logPath, `[${phase ?? "progress"}] ${message}`);
       }
     });
@@ -438,13 +474,25 @@ export class CodexJobManager {
       if (live.turnId && !entry.capture.turnId) {
         entry.capture.turnId = live.turnId;
       }
+      live.updatedAt = new Date().toISOString();
       upsertJob(workspaceRoot, this.#serializeJobRecord(live));
     } catch (err) {
       live.status = "failed";
       live.error = err instanceof Error ? err.message : String(err);
       live.completedAt = new Date().toISOString();
+      live.updatedAt = live.completedAt;
       entry.cleanup();
+      if (worktreePath) {
+        try {
+          removeIsolatedWorktree(workspaceRoot, worktreePath, branchName);
+          live.worktreePath = null;
+          live.branchName = null;
+        } catch {
+          // Best-effort rollback of freshly created worktree.
+        }
+      }
       upsertJob(workspaceRoot, this.#serializeJobRecord(live));
+      this.#evictLiveJob(live);
       this.#notifyWaiters();
       throw err;
     }
@@ -458,6 +506,7 @@ export class CodexJobManager {
       }
       live.pendingRequest = null;
       live.completedAt = new Date().toISOString();
+      live.updatedAt = live.completedAt;
 
       if (live.status !== "cancelled") {
         const failed = state.finalTurn?.status === "failed" || Boolean(state.error);
@@ -474,6 +523,7 @@ export class CodexJobManager {
 
       appendJobLog(logPath, `Finished status=${live.status}\n${live.finalMessage}`);
       const persisted = upsertJob(workspaceRoot, this.#serializeJobRecord(live));
+      this.#evictLiveJob(live);
       this.#notifyWaiters();
       return persisted;
     });
@@ -577,18 +627,25 @@ export class CodexJobManager {
       if (mode === "standard") {
         const nativeTarget = buildNativeReviewTarget(target);
         const delivery = args.delivery ?? "inline";
-        const res = await client.request("review/start", {
-          threadId: sourceThreadId,
-          delivery,
-          target: nativeTarget
-        });
-        if (res?.reviewThreadId) {
-          client.bindExtraThread(entry, res.reviewThreadId, delivery === "detached");
-          this.threadToJobId.set(res.reviewThreadId, jobId);
-          if (delivery === "detached") {
-            live.threadId = res.reviewThreadId;
+        const res = await client.request(
+          "review/start",
+          {
+            threadId: sourceThreadId,
+            delivery,
+            target: nativeTarget
+          },
+          {
+            onResultSync: (syncRes) => {
+              if (syncRes?.reviewThreadId) {
+                client.bindExtraThread(entry, syncRes.reviewThreadId, delivery === "detached");
+                this.threadToJobId.set(syncRes.reviewThreadId, jobId);
+                if (delivery === "detached") {
+                  live.threadId = syncRes.reviewThreadId;
+                }
+              }
+            }
           }
-        }
+        );
         live.turnId = res?.turn?.id ?? entry.capture.turnId ?? null;
         if (live.turnId && !entry.capture.turnId) {
           entry.capture.turnId = live.turnId;
@@ -615,13 +672,16 @@ export class CodexJobManager {
           entry.capture.turnId = live.turnId;
         }
       }
+      live.updatedAt = new Date().toISOString();
       upsertJob(workspaceRoot, this.#serializeJobRecord(live));
     } catch (err) {
       live.status = "failed";
       live.error = err instanceof Error ? err.message : String(err);
       live.completedAt = new Date().toISOString();
+      live.updatedAt = live.completedAt;
       entry.cleanup();
       upsertJob(workspaceRoot, this.#serializeJobRecord(live));
+      this.#evictLiveJob(live);
       this.#notifyWaiters();
       throw err;
     }
@@ -629,6 +689,7 @@ export class CodexJobManager {
     const state = await entry.capture.completion;
     live.turnId = state.turnId ?? live.turnId;
     live.completedAt = new Date().toISOString();
+    live.updatedAt = live.completedAt;
     live.reviewText = state.reviewText || "";
     live.finalMessage = state.lastAgentMessage || "";
 
@@ -646,6 +707,7 @@ export class CodexJobManager {
 
     appendJobLog(logPath, `Finished review status=${live.status}\n${live.reviewText || live.finalMessage}`);
     const persisted = upsertJob(workspaceRoot, this.#serializeJobRecord(live));
+    this.#evictLiveJob(live);
     this.#notifyWaiters();
     return this.#buildJobResultPayload(persisted);
   }
@@ -820,19 +882,24 @@ export class CodexJobManager {
     if (!live || live.status !== "running") {
       throw new Error("Target job is not currently running; cannot steer.");
     }
+    const turnId = live.capture?.turnId ?? live.turnId;
+    if (!turnId) {
+      throw new Error("Target job has no active turnId yet; retry once the turn starts.");
+    }
 
     try {
       await live.client.request("turn/steer", {
         threadId: live.threadId,
-        turnId: live.turnId,
+        turnId,
         input: buildTurnInput(guidance)
       });
+      live.updatedAt = new Date().toISOString();
       appendJobLog(live.logPath, `[steer] ${guidance}`);
       return {
         ok: true,
         jobId: live.jobId,
         threadId: live.threadId,
-        turnId: live.turnId
+        turnId
       };
     } catch (err) {
       if (isUnsupportedMethodError(err)) {
@@ -876,6 +943,7 @@ export class CodexJobManager {
       }
 
       upsertJob(live.workspaceRoot, this.#serializeJobRecord(live));
+      this.#evictLiveJob(live);
       this.#notifyWaiters();
       return {
         ok: true,
@@ -992,7 +1060,7 @@ export class CodexJobManager {
   async transferSession(args = {}) {
     const cwd = args.cwd || process.cwd();
     const workspaceRoot = resolveWorkspaceRoot(cwd);
-    const handoff = extractAntigravityHandoff(workspaceRoot, args.transcriptPath, {
+    const handoff = await extractAntigravityHandoff(workspaceRoot, args.transcriptPath, {
       focus: args.focus,
       allowedRoots: this.allowedTranscriptRoots
     });
@@ -1005,6 +1073,12 @@ export class CodexJobManager {
       model: args.model,
       conversationId: args.conversationId
     });
+
+    if (result.status !== "completed") {
+      throw new Error(
+        `Session transfer failed (${result.status}): ${result.error ?? "Codex did not acknowledge the handoff."}`
+      );
+    }
 
     return {
       jobId: result.jobId,
