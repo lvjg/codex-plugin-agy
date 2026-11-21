@@ -1,0 +1,21 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "codex-bridge",
+  "displayName": "Codex",
+  "version": "0.1.0",
+  "description": "Delegate code reviews, adversarial audits, and autonomous coding tasks to local OpenAI Codex threads via app-server.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Run a Codex review on my uncommitted changes",
+    "Hand off this failing test investigation to Codex in the background",
+    "Check my local Codex setup and toggle the stop-time review gate"
+  ],
+  "author": {
+    "name": "lvjg",
+    "url": "https://github.com/lvjg"
+  },
+  "homepage": "https://github.com/lvjg/codex-plugin-agy",
+  "repository": "https://github.com/lvjg/codex-plugin-agy",
+  "license": "Apache-2.0",
+  "keywords": ["codex", "openai", "code-review", "subagent", "app-server"]
+}

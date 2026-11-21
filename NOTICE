@@ -1,0 +1,7 @@
+codex-plugin-agy (Codex Bridge for Antigravity)
+Copyright 2026 lvjg
+
+This product adapts protocol conventions, review output schema, and prompt
+templates inspired by OpenAI's codex-plugin-cc
+(https://github.com/openai/codex-plugin-cc), licensed under the Apache License,
+Version 2.0.

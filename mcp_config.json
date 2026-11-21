@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "runtime": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/scripts/mcp-server.mjs"],
+      "timeoutSeconds": 900,
+      "tools": {
+        "codex_review": { "eager": true, "background": "always" },
+        "codex_run": { "eager": true, "background": "always" },
+        "codex_task_start": { "eager": true, "background": "off" },
+        "codex_status": { "eager": true, "background": "off" },
+        "codex_wait": { "eager": false, "background": "off" },
+        "codex_steer": { "eager": false, "background": "off" },
+        "codex_interrupt": { "eager": false, "background": "off" },
+        "codex_setup": { "eager": false, "background": "off" },
+        "codex_respond": { "eager": false, "background": "off" },
+        "codex_thread_fork": { "eager": false, "background": "off" },
+        "codex_transfer": { "eager": false, "background": "off" }
+      }
+    }
+  }
+}
