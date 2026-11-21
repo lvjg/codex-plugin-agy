@@ -80,6 +80,10 @@ function handleRequest(msg) {
 
     case "thread/name/set": {
       const t = threads.get(params.threadId);
+      if (t?.ephemeral) {
+        sendError(id, -32600, `ephemeral thread does not support metadata updates: ${params.threadId}`);
+        return;
+      }
       if (t) {
         t.name = params.name;
       }
@@ -260,8 +264,12 @@ function handleRequest(msg) {
         sendError(id, -32601, "Method not found: turn/steer");
         return;
       }
+      if (!params.expectedTurnId) {
+        sendError(id, -32602, "Missing required field: expectedTurnId");
+        return;
+      }
       steeredPrompts.set(params.threadId, params.input?.[0]?.text ?? "");
-      sendResult(id, { ok: true });
+      sendResult(id, { turnId: params.expectedTurnId });
       return;
     }
 

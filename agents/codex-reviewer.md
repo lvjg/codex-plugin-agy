@@ -8,9 +8,7 @@ mainAgent: false
 subagent: true
 commandExecutionPolicy: off
 tools:
-  - view_file
-  - grep_search
-  - find_by_name
+  - read_file
   - send_message
 inheritMcp: true
 inheritCustomizations: false

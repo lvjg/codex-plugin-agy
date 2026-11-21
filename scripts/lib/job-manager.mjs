@@ -340,20 +340,21 @@ export class CodexJobManager {
       return resumed?.thread?.id ?? threadId;
     }
 
+    const isEphemeral = options.ephemeral ?? false;
     const started = await client.request("thread/start", {
       cwd: targetCwd,
       model: options.model ?? null,
       approvalPolicy,
       sandbox,
       serviceName: SERVICE_NAME,
-      ephemeral: options.ephemeral ?? false
+      ephemeral: isEphemeral
     });
     const newThreadId = started?.thread?.id;
     if (!newThreadId) {
       throw new Error("codex app-server thread/start returned no thread.id.");
     }
 
-    if (options.threadName) {
+    if (options.threadName && !isEphemeral) {
       try {
         await client.request("thread/name/set", {
           threadId: newThreadId,
@@ -888,18 +889,20 @@ export class CodexJobManager {
     }
 
     try {
-      await live.client.request("turn/steer", {
+      const steerRes = await live.client.request("turn/steer", {
         threadId: live.threadId,
-        turnId,
+        expectedTurnId: turnId,
         input: buildTurnInput(guidance)
       });
+      const activeTurnId = steerRes?.turnId ?? turnId;
+      live.turnId = activeTurnId;
       live.updatedAt = new Date().toISOString();
       appendJobLog(live.logPath, `[steer] ${guidance}`);
       return {
         ok: true,
         jobId: live.jobId,
         threadId: live.threadId,
-        turnId
+        turnId: activeTurnId
       };
     } catch (err) {
       if (isUnsupportedMethodError(err)) {
@@ -984,10 +987,13 @@ export class CodexJobManager {
       throw new Error("`requestId` is required.");
     }
 
-    const resultPayload = args.result ?? {
-      decision: args.decision,
-      answer: args.answer
-    };
+    const resultPayload =
+      args.result ??
+      (args.decision !== undefined
+        ? { decision: args.decision }
+        : args.answer !== undefined
+          ? { answers: args.answer }
+          : {});
     live.client.respondToServerRequest(args.requestId, {
       result: resultPayload,
       error: args.error ?? null
