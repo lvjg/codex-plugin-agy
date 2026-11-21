@@ -35,10 +35,9 @@ Verify installation:
 agy plugin list
 ```
 
-Update to the latest version from GitHub:
+Update to the latest version from GitHub (replaces the existing installation in place):
 
 ```bash
-agy plugin uninstall codex-bridge
 agy plugin install https://github.com/lvjg/codex-plugin-agy
 ```
 
